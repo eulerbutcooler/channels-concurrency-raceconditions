@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -39,8 +40,9 @@ type Client struct {
 type Server struct {
 	clients map[uuid.UUID]*Client
 	// mu      *sync.RWMutex
-	joinCh  chan *Client
-	leaveCh chan *Client
+	joinCh      chan *Client
+	leaveCh     chan *Client
+	broadcastCh chan *ReqMsg
 }
 
 func NewClient(conn *websocket.Conn) *Client {
@@ -56,19 +58,29 @@ func NewServer() *Server {
 	return &Server{
 		clients: map[uuid.UUID]*Client{},
 		// mu:      new(sync.RWMutex),
-		joinCh:  make(chan *Client, 64),
-		leaveCh: make(chan *Client, 64),
+		joinCh:      make(chan *Client, 64),
+		leaveCh:     make(chan *Client, 64),
+		broadcastCh: make(chan *ReqMsg, 64),
 	}
 }
 
-func (c *Client) readMsgLoop(leaveServerCh chan<- *Client) {
+func (c *Client) readMsgLoop(leaveCh chan<- *Client, broadcastCh chan<- *ReqMsg) {
 	defer func() {
 		c.conn.Close()
-		leaveServerCh <- c
+		leaveCh <- c
 	}()
-	_, b, err := c.conn.ReadMessage()
-	if err != nil {
-		return
+	for {
+		_, b, err := c.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg := new(ReqMsg)
+		err = json.Unmarshal(b, msg)
+		if err != nil {
+			fmt.Printf("unable to unmarshal the msg %v\n", err)
+			continue
+		}
+		broadcastCh <- msg
 	}
 }
 
@@ -81,6 +93,9 @@ func (s *Server) AcceptLoop() {
 		case c := <-s.leaveCh:
 			// leave logic
 			s.leaveServer(c)
+		case msg := <-s.broadcastCh:
+			// broadcast logic
+			s.broadcast(msg)
 		}
 	}
 }
@@ -93,6 +108,10 @@ func (s *Server) joinServer(c *Client) {
 func (s *Server) leaveServer(c *Client) {
 	delete(s.clients, c.ID)
 	fmt.Printf("client left the server, cID: %s\n", c.ID)
+}
+
+func (s *Server) broadcast(m *ReqMsg) {
+
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +129,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	client := NewClient(conn)
 	s.joinCh <- client
+	go client.readMsgLoop(s.leaveCh, s.broadcastCh)
 	// Bad solution.
 	// NOTE: Dont communicate by sharing memory. Share memory by communicating.
 	// s.mu.Lock()
