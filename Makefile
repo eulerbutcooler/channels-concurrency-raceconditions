@@ -8,3 +8,11 @@ chat: build-chat
 test-chat-race:
 	@go clean -testcache
 	@go test -race -v ./...
+
+test-rooms-race:
+	@go clean -testcache
+	@go test -race -v -timeout 30s -run TestRooms .
+
+test-chat:
+	@go clean -testcache
+	@go test -v ./...
